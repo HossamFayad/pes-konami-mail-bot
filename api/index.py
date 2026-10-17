@@ -23,6 +23,21 @@ def home():
         "instructions": "Visit /set_webhook to automatically configure the Telegram Webhook."
     }
 
+@app.get("/debug")
+def debug():
+    import database
+    from mail_service import MailService
+    try:
+        acc = MailService.create_account("pes_dbg")
+    except Exception as e:
+        acc = str(e)
+    return {
+        "USE_TURSO": database.USE_TURSO,
+        "TURSO_URL": database.TURSO_URL,
+        "test_acc": acc
+    }
+
+
 @app.get("/set_webhook")
 def set_webhook(request: Request):
     host = request.headers.get("host")
