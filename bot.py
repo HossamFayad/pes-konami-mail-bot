@@ -13,7 +13,14 @@ from database import (
     clear_active_account,
     get_user_accounts,
     get_account_by_id,
-    get_all_active_monitored_accounts
+    get_all_active_monitored_accounts,
+    is_admin,
+    add_admin,
+    get_all_accounts_admin,
+    get_bot_stats,
+    set_prompt_state,
+    get_prompt_state,
+    clear_prompt_state
 )
 from mail_service import MailService
 
@@ -27,6 +34,9 @@ seen_message_ids = set()
 # In-memory tracking of chat message IDs to allow cleaning the screen per user
 user_chat_messages = {}
 
+# Admin prompt state: telegram_id -> state string (e.g. "waiting_admin_id")
+admin_prompt_state = {}
+
 def track_msg(chat_id: int, msg_id: int):
     if chat_id not in user_chat_messages:
         user_chat_messages[chat_id] = []
@@ -34,14 +44,12 @@ def track_msg(chat_id: int, msg_id: int):
         user_chat_messages[chat_id].append(msg_id)
 
 def send_and_track(chat_id: int, text: str, **kwargs):
-    from database import turso_execute
     try:
         msg = bot.send_message(chat_id, text, **kwargs)
         track_msg(chat_id, msg.message_id)
-        turso_execute("INSERT INTO debug_logs (event, data) VALUES (?, ?)", ["send_ok", f"{chat_id}:{msg.message_id}"])
         return msg
     except Exception as e:
-        turso_execute("INSERT INTO debug_logs (event, data) VALUES (?, ?)", ["send_err", str(e)[:300]])
+        print(f"[SendError] {e}")
         try:
             import re
             plain = re.sub(r'<[^<]+?>', '', text)
@@ -49,18 +57,22 @@ def send_and_track(chat_id: int, text: str, **kwargs):
             track_msg(chat_id, msg.message_id)
             return msg
         except Exception as e2:
-            turso_execute("INSERT INTO debug_logs (event, data) VALUES (?, ?)", ["send_fallback_err", str(e2)[:300]])
+            print(f"[SendFallbackError] {e2}")
             return None
 
-
+def safe_answer(call_id: str, text: str = None, show_alert: bool = False):
+    try:
+        bot.answer_callback_query(call_id, text=text, show_alert=show_alert)
+    except Exception:
+        pass
 
 # Main Keyboard Markup
-def get_main_menu_markup():
+def get_main_menu_markup(telegram_id: int = None):
     markup = types.InlineKeyboardMarkup(row_width=2)
     btn_new = types.InlineKeyboardButton("🎲 إنشاء إيميل كونامي جديد", callback_data="btn_new_email")
     btn_inbox = types.InlineKeyboardButton("📬 فحص الرسائل والكود", callback_data="btn_check_inbox")
     btn_handover = types.InlineKeyboardButton("📋 كارت التسليم للمشتري", callback_data="btn_handover")
-    btn_archive = types.InlineKeyboardButton("📂 أرشيف الحسابات", callback_data="btn_archive")
+    btn_archive = types.InlineKeyboardButton("📂 أرشيف حساباتي", callback_data="btn_archive")
     btn_clean = types.InlineKeyboardButton("🧹 إنهاء وتجهيز لعميل جديد", callback_data="btn_clean_screen")
     btn_guide = types.InlineKeyboardButton("ℹ️ شرح ربط كونامي", callback_data="btn_guide")
     
@@ -68,7 +80,36 @@ def get_main_menu_markup():
     markup.add(btn_inbox, btn_handover)
     markup.add(btn_archive, btn_clean)
     markup.add(btn_guide)
+    
+    # If the user is an authorized admin, display the Admin Panel button
+    if telegram_id and is_admin(telegram_id):
+        markup.add(types.InlineKeyboardButton("👑 لوحة تحكم إدارة المتجر", callback_data="btn_admin_panel"))
+        
     return markup
+
+def show_admin_panel(telegram_id: int, message_id: int = None):
+    stats = get_bot_stats()
+    text = (
+        "👑 <b>لوحة تحكم إدارة المتجر (Admin Control Panel)</b> 🛡️\n\n"
+        "📊 <b>إحصائيات المتجر الشاملة:</b>\n"
+        f"• إجمالي إيميلات كونامي المنشأة: <b>{stats['total_accounts']}</b> حساب\n"
+        f"• إجمالي المستخدمين في البوت: <b>{stats['total_users']}</b> مستخدم\n\n"
+        "🔒 <b>مستوى الأمان مفعّل:</b> المستخدمون العاديون لا يستطيعون رؤية أو فتح سوى الإيميلات التي ولدوها بأنفسهم لمنع سرقة الحسابات.\n\n"
+        "👇 <b>اختر الإجراء الإداري:</b>"
+    )
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        types.InlineKeyboardButton("🌐 أرشيف كل حسابات المتجر (شامل الكل)", callback_data="btn_admin_all_accs"),
+        types.InlineKeyboardButton("➕ إضافة أدمن جديد (صاحبك)", callback_data="btn_admin_add_prompt"),
+        types.InlineKeyboardButton("🔙 العودة للقائمة الرئيسية", callback_data="btn_main_menu")
+    )
+    if message_id:
+        try:
+            bot.edit_message_text(text, chat_id=telegram_id, message_id=message_id, reply_markup=markup)
+            return
+        except Exception:
+            pass
+    send_and_track(telegram_id, text, reply_markup=markup)
 
 @bot.message_handler(commands=['start', 'help'])
 def handle_start(message):
@@ -87,13 +128,65 @@ def handle_start(message):
         f"📧 <b>الحساب النشط حالياً:</b>\n{active_info}\n\n"
         "👇 <b>اختر الإجراء المطلوب من القائمة:</b>"
     )
-    send_and_track(telegram_id, text, reply_markup=get_main_menu_markup())
+    send_and_track(telegram_id, text, reply_markup=get_main_menu_markup(telegram_id))
 
-def safe_answer(call_id: str, text: str = None, show_alert: bool = False):
-    try:
-        bot.answer_callback_query(call_id, text=text, show_alert=show_alert)
-    except Exception:
-        pass
+@bot.message_handler(commands=['admin'])
+def handle_admin_command(message):
+    telegram_id = message.chat.id
+    track_msg(telegram_id, message.message_id)
+    if not is_admin(telegram_id):
+        send_and_track(telegram_id, "⛔ عذراً، هذا الأمر مخصص لمدير المتجر فقط.")
+        return
+    show_admin_panel(telegram_id)
+
+@bot.message_handler(commands=['addadmin'])
+def handle_addadmin_command(message):
+    telegram_id = message.chat.id
+    track_msg(telegram_id, message.message_id)
+    if not is_admin(telegram_id):
+        send_and_track(telegram_id, "⛔ عذراً، هذا الأمر مخصص لمدير المتجر فقط.")
+        return
+    parts = message.text.split()
+    if len(parts) > 1 and parts[1].strip().isdigit():
+        new_id = int(parts[1].strip())
+        add_admin(new_id, telegram_id)
+        text = (
+            f"✅ <b>تم إضافة الأدمن الجديد بنجاح!</b> 👑\n\n"
+            f"👤 <b>الآيدي:</b> <code>{new_id}</code>\n\n"
+            "أصبح يملك الآن كامل صلاحيات لوحة التحكم والوصول لأرشيف جميع حسابات المتجر."
+        )
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("👑 لوحة الإدارة", callback_data="btn_admin_panel"))
+        send_and_track(telegram_id, text, reply_markup=markup)
+    else:
+        send_and_track(telegram_id, "⚠️ <b>طريقة الاستخدام:</b>\nاكتب: <code>/addadmin 123456789</code>\n(استبدل الأرقام بآيدي صاحبك)")
+
+@bot.message_handler(func=lambda msg: True)
+def handle_text_messages(message):
+    telegram_id = message.chat.id
+    track_msg(telegram_id, message.message_id)
+    
+    # Check if admin is currently submitting a new Admin Telegram ID
+    current_state = get_prompt_state(telegram_id) or admin_prompt_state.get(telegram_id)
+    if is_admin(telegram_id) and current_state == "waiting_admin_id":
+        clear_prompt_state(telegram_id)
+        admin_prompt_state[telegram_id] = None
+        new_id_text = message.text.strip()
+        if new_id_text.isdigit():
+            new_id = int(new_id_text)
+            add_admin(new_id, telegram_id)
+            text = (
+                f"✅ <b>تم إضافة الأدمن الجديد بنجاح!</b> 👑\n\n"
+                f"👤 <b>الآيدي:</b> <code>{new_id}</code>\n\n"
+                "أصبح يملك الآن كامل صلاحيات لوحة التحكم والوصول لأرشيف جميع حسابات المتجر."
+            )
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("👑 العودة للوحة الإدارة", callback_data="btn_admin_panel"))
+            send_and_track(telegram_id, text, reply_markup=markup)
+            return
+        else:
+            send_and_track(telegram_id, "⚠️ خطأ: يرجى إرسال رقم آيدي تليجرام صحيح (أرقام فقط)!\nأو استخدم الأمر المباشر:\n<code>/addadmin 123456789</code>")
+            return
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
@@ -102,8 +195,9 @@ def handle_callbacks(call):
     data = call.data
     
     if data == "btn_main_menu":
-
-
+        safe_answer(call.id)
+        clear_prompt_state(telegram_id)
+        admin_prompt_state[telegram_id] = None
         active = get_active_account(telegram_id)
         active_info = f"<code>{active['email']}</code>" if active else "لا يوجد إيميل نشط حالياً."
         text = (
@@ -112,9 +206,55 @@ def handle_callbacks(call):
             "👇 اختر الإجراء المطلوب:"
         )
         try:
-            bot.edit_message_text(text, chat_id=telegram_id, message_id=call.message.message_id, reply_markup=get_main_menu_markup())
+            bot.edit_message_text(text, chat_id=telegram_id, message_id=call.message.message_id, reply_markup=get_main_menu_markup(telegram_id))
         except Exception:
-            send_and_track(telegram_id, text, reply_markup=get_main_menu_markup())
+            send_and_track(telegram_id, text, reply_markup=get_main_menu_markup(telegram_id))
+        return
+
+    elif data == "btn_admin_panel":
+        safe_answer(call.id)
+        clear_prompt_state(telegram_id)
+        admin_prompt_state[telegram_id] = None
+        if not is_admin(telegram_id):
+            safe_answer(call.id, "⛔ ليس لديك صلاحية المدير!", show_alert=True)
+            return
+        show_admin_panel(telegram_id, call.message.message_id)
+        return
+
+    elif data == "btn_admin_add_prompt":
+        safe_answer(call.id)
+        if not is_admin(telegram_id):
+            return
+        set_prompt_state(telegram_id, "waiting_admin_id")
+        admin_prompt_state[telegram_id] = "waiting_admin_id"
+        text = (
+            "➕ <b>إضافة أدمن جديد للمتجر:</b>\n\n"
+            "أرسل الآن في الشات <b>رقم الآيدي (Telegram ID)</b> الخاص بصاحبك وسأقوم بإعطائه كامل الصلاحيات فوراً.\n\n"
+            "💡 <i>(يمكنه معرفة الآيدي الخاص به بسهولة من بوت: @userinfobot)</i>\n\n"
+            "أو يمكنك كتابة الأمر المباشر:\n<code>/addadmin 123456789</code>"
+        )
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔙 إلغاء والعودة", callback_data="btn_admin_panel"))
+        send_and_track(telegram_id, text, reply_markup=markup)
+        return
+
+    elif data == "btn_admin_all_accs":
+        safe_answer(call.id)
+        if not is_admin(telegram_id):
+            return
+        all_accounts = get_all_accounts_admin(limit=15)
+        if not all_accounts:
+            safe_answer(call.id, "لا توجد أي حسابات منشأة حتى الآن!", show_alert=True)
+            return
+            
+        text = "🌐 <b>أرشيف كل حسابات المتجر الشامل (Admin View):</b>\n\nاضغط على أي إيميل لفتحه وفحص رسائله وأكواد التفعيل:"
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for acc in all_accounts:
+            btn_title = f"📧 {acc['email']} (👤 {acc['telegram_id']})"
+            markup.add(types.InlineKeyboardButton(btn_title, callback_data=f"switch_{acc['id']}"))
+            
+        markup.add(types.InlineKeyboardButton("🔙 العودة للوحة الإدارة", callback_data="btn_admin_panel"))
+        send_and_track(telegram_id, text, reply_markup=markup)
         return
 
     elif data == "btn_clean_screen":
@@ -142,21 +282,17 @@ def handle_callbacks(call):
             "🔒 <b>ملاحظة أمان:</b> جميع الإيميلات السابقة محفوظة بأمان في الأرشيف (📂) ولن تضيع أبداً.\n\n"
             "جاهز الآن للبدء مع العميل الجديد 👇"
         )
-        send_and_track(telegram_id, fresh_text, reply_markup=get_main_menu_markup())
+        send_and_track(telegram_id, fresh_text, reply_markup=get_main_menu_markup(telegram_id))
         return
 
     elif data == "btn_new_email":
-        from database import turso_execute
-        turso_execute("INSERT INTO debug_logs (event, data) VALUES (?, ?)", ["btn_new_email_start", str(telegram_id)])
         safe_answer(call.id, "جاري إنشاء إيميل دائم جديد...")
         acc_data = MailService.create_account(prefix="pes")
         
         if not acc_data:
-            turso_execute("INSERT INTO debug_logs (event, data) VALUES (?, ?)", ["acc_data_failed", "None"])
             send_and_track(telegram_id, "⚠️ عذراً، حدث خطأ أثناء الاتصال بالخادم. يرجى المحاولة مرة أخرى بعد لحظات.")
             return
             
-        turso_execute("INSERT INTO debug_logs (event, data) VALUES (?, ?)", ["acc_created_ok", acc_data.get("email", "")])
         save_account(
             telegram_id=telegram_id,
             email=acc_data["email"],
@@ -165,7 +301,6 @@ def handle_callbacks(call):
             token=acc_data["token"],
             note=f"أكونت {datetime.now().strftime('%Y-%m-%d %H:%M')}"
         )
-
         
         text = (
             "✅ <b>تم إنشاء إيميل كونامي جديد بنجاح!</b> 🎮\n\n"
@@ -248,6 +383,11 @@ def handle_callbacks(call):
         if not active:
             return
             
+        # SECURITY CHECK: Only owner or admin can read messages
+        if str(active.get("telegram_id")) != str(telegram_id) and not is_admin(telegram_id):
+            safe_answer(call.id, "⛔ ليس لديك صلاحية قراءة رسائل هذا الإيميل!", show_alert=True)
+            return
+            
         msg_id = data.replace("read_", "")
         detail = MailService.get_message_detail(active["token"], msg_id)
         if not detail:
@@ -295,12 +435,13 @@ def handle_callbacks(call):
         send_and_track(telegram_id, card_text, reply_markup=markup)
 
     elif data == "btn_archive":
+        # Regular users only see their own accounts!
         accounts = get_user_accounts(telegram_id, limit=8)
         if not accounts:
             safe_answer(call.id, "لم تقم بإنشاء أي إيميلات بعد!", show_alert=True)
             return
             
-        text = "📂 <b>أرشيف حسابات كونامي المنشأة مؤخراً:</b>\n\nاضغط على أي إيميل لجعله الحساب النشط وفحص رسائله:"
+        text = "📂 <b>أرشيف حسابات كونامي الخاصة بك:</b>\n\nاضغط على أي إيميل لجعله الحساب النشط وفحص رسائله:"
         markup = types.InlineKeyboardMarkup(row_width=1)
         for acc in accounts:
             btn_title = f"📧 {acc['email']}"
@@ -313,6 +454,11 @@ def handle_callbacks(call):
         acc_id = int(data.replace("switch_", ""))
         acc = get_account_by_id(acc_id)
         if acc:
+            # STRICT SECURITY CHECK: Only owner of account or authorized Admin can switch/access!
+            if str(acc.get("telegram_id")) != str(telegram_id) and not is_admin(telegram_id):
+                safe_answer(call.id, "⛔ هذا الحساب ليس ملكك ولا يمكنك فتحه!", show_alert=True)
+                return
+                
             set_active_account(telegram_id, acc_id)
             safe_answer(call.id, "تم تفعيل الحساب بنجاح!")
             text = (
@@ -335,14 +481,14 @@ def handle_callbacks(call):
             "3. اضغط على <b>Register (تسجيل حساب جديد)</b>.\n"
             "4. انسخ الإيميل والباسورد المولدين من البوت وضعهما في الخانات المطلوبة.\n"
             "5. ستطلب منك كونامي إدخال <b>كود التفعيل (6 أرقام)</b> المرسل للبريد.\n"
-            "6. ارجع للبوت فوراً، ستجد كود التفعيل وصل في رسالة إشعار تلقائية!\n"
+            "6. ارجع للبوت فوراً، اضغط 'فحص الرسائل والكود' وسيظهر كود التفعيل في ثانية!\n"
             "7. انسخ الكود بلمسة واحدة وضعه في المتصفح.. ومبروك تم ربط الأكونت بنجاح! 🏆"
         )
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="btn_main_menu"))
         send_and_track(telegram_id, guide_text, reply_markup=markup)
 
-# Background Listener Thread for Auto OTP Push Notification
+# Background Listener Thread for Auto OTP Push Notification (for local mode)
 def background_mail_listener():
     print("[Listener] Background mail polling thread started...")
     while True:
@@ -364,7 +510,6 @@ def background_mail_listener():
                     if unique_key not in seen_message_ids:
                         seen_message_ids.add(unique_key)
                         
-                        # Detail message
                         detail = MailService.get_message_detail(token, msg_id)
                         subject = msg.get("subject", "رسالة جديدة")
                         sender = msg.get("from", {}).get("address", "")
@@ -375,7 +520,6 @@ def background_mail_listener():
                         
                         otp_code = MailService.extract_otp(subject, f"{intro}\n{text_content}", html_content)
                         
-                        # Formulate Instant High-Priority Alert
                         if otp_code:
                             alert = (
                                 "🚨 <b>وصل كود تفعيل كونامي الآن!</b> 🚨\n\n"
@@ -411,7 +555,6 @@ def background_mail_listener():
 
 def start_bot():
     init_db()
-    # Start auto-notification thread
     listener_thread = threading.Thread(target=background_mail_listener, daemon=True)
     listener_thread.start()
     

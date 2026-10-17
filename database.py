@@ -93,14 +93,32 @@ def init_db():
         last_checked_message_id TEXT
     )
     """
+    sql3 = """
+    CREATE TABLE IF NOT EXISTS admins (
+        telegram_id INTEGER PRIMARY KEY,
+        added_by INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """
+    sql4 = """
+    CREATE TABLE IF NOT EXISTS user_prompts (
+        telegram_id INTEGER PRIMARY KEY,
+        state TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """
     if USE_TURSO:
         turso_execute(sql1)
         turso_execute(sql2)
+        turso_execute(sql3)
+        turso_execute(sql4)
     else:
         conn = get_sqlite_conn()
         cursor = conn.cursor()
         cursor.execute(sql1)
         cursor.execute(sql2)
+        cursor.execute(sql3)
+        cursor.execute(sql4)
         conn.commit()
         conn.close()
 
@@ -231,6 +249,111 @@ def get_all_active_monitored_accounts() -> List[Dict[str, Any]]:
         conn.close()
         return [dict(r) for r in rows]
 
+def set_prompt_state(telegram_id: int, state: str):
+    if USE_TURSO:
+        turso_execute("INSERT OR REPLACE INTO user_prompts (telegram_id, state) VALUES (?, ?)", [telegram_id, state])
+    else:
+        conn = get_sqlite_conn()
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR REPLACE INTO user_prompts (telegram_id, state) VALUES (?, ?)", (telegram_id, state))
+        conn.commit()
+        conn.close()
+
+def get_prompt_state(telegram_id: int) -> Optional[str]:
+    if USE_TURSO:
+        res = turso_execute("SELECT state FROM user_prompts WHERE telegram_id = ?", [telegram_id])
+        return res[0].get("state") if res else None
+    else:
+        conn = get_sqlite_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT state FROM user_prompts WHERE telegram_id = ?", (telegram_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
+
+def clear_prompt_state(telegram_id: int):
+    if USE_TURSO:
+        turso_execute("DELETE FROM user_prompts WHERE telegram_id = ?", [telegram_id])
+    else:
+        conn = get_sqlite_conn()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM user_prompts WHERE telegram_id = ?", (telegram_id,))
+        conn.commit()
+        conn.close()
+
+SUPER_ADMINS = [5575156113]
+
+def is_admin(telegram_id: int) -> bool:
+    try:
+        t_id = int(telegram_id)
+        if t_id in SUPER_ADMINS:
+            return True
+        if USE_TURSO:
+            res = turso_execute("SELECT 1 FROM admins WHERE telegram_id = ?", [t_id])
+            return bool(res)
+        else:
+            conn = get_sqlite_conn()
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1 FROM admins WHERE telegram_id = ?", (t_id,))
+            row = cursor.fetchone()
+            conn.close()
+            return bool(row)
+    except Exception:
+        return False
+
+def add_admin(new_admin_id: int, added_by: int) -> bool:
+    try:
+        t_id = int(new_admin_id)
+        if USE_TURSO:
+            turso_execute("INSERT OR IGNORE INTO admins (telegram_id, added_by) VALUES (?, ?)", [t_id, added_by])
+        else:
+            conn = get_sqlite_conn()
+            cursor = conn.cursor()
+            cursor.execute("INSERT OR IGNORE INTO admins (telegram_id, added_by) VALUES (?, ?)", (t_id, added_by))
+            conn.commit()
+            conn.close()
+        return True
+    except Exception as e:
+        print(f"[AddAdminError] {e}")
+        return False
+
+def get_all_accounts_admin(limit: int = 20) -> List[Dict[str, Any]]:
+    if USE_TURSO:
+        sql = "SELECT * FROM accounts ORDER BY id DESC LIMIT ?"
+        return turso_execute(sql, [limit])
+    else:
+        conn = get_sqlite_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM accounts ORDER BY id DESC LIMIT ?", (limit,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+def get_bot_stats() -> Dict[str, Any]:
+    try:
+        if USE_TURSO:
+            res = turso_execute("SELECT COUNT(*) as total_accounts, COUNT(DISTINCT telegram_id) as total_users FROM accounts")
+            if res:
+                return {
+                    "total_accounts": int(res[0].get("total_accounts", 0)),
+                    "total_users": int(res[0].get("total_users", 0))
+                }
+        else:
+            conn = get_sqlite_conn()
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) as total_accounts, COUNT(DISTINCT telegram_id) as total_users FROM accounts")
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                return {
+                    "total_accounts": row[0],
+                    "total_users": row[1]
+                }
+    except Exception as e:
+        print(f"[StatsError] {e}")
+    return {"total_accounts": 0, "total_users": 0}
+
 if __name__ == "__main__":
     init_db()
     print("Database initialized successfully! USE_TURSO =", USE_TURSO)
+
