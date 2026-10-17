@@ -56,15 +56,15 @@ def set_webhook(request: Request):
 @app.post("/api/webhook")
 async def telegram_webhook(request: Request):
     try:
-        if request.headers.get("content-type") == "application/json":
-            json_string = await request.body()
-            update = telebot.types.Update.de_json(json_string.decode("utf-8"))
+        raw_body = await request.body()
+        if raw_body:
+            json_str = raw_body.decode("utf-8")
+            update = telebot.types.Update.de_json(json_str)
             if update:
                 bot.process_new_updates([update])
-            return Response(status_code=200)
     except Exception as e:
         import traceback
         print(f"[WebhookError] {traceback.format_exc()}")
-        return Response(status_code=200)
     return Response(status_code=200)
+
 
