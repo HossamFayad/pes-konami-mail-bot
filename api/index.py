@@ -6,7 +6,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from fastapi import FastAPI, Request, Response
 import telebot
-from database import init_db
+from database import init_db, turso_execute
 from bot import bot
 
 app = FastAPI(title="PES Konami Mail Webhook")
@@ -55,16 +55,20 @@ def set_webhook(request: Request):
 
 @app.post("/api/webhook")
 async def telegram_webhook(request: Request):
+    raw_body = await request.body()
     try:
-        raw_body = await request.body()
         if raw_body:
             json_str = raw_body.decode("utf-8")
+            turso_execute("INSERT INTO debug_logs (event, data) VALUES (?, ?)", ["webhook_received", json_str[:300]])
             update = telebot.types.Update.de_json(json_str)
             if update:
                 bot.process_new_updates([update])
+                turso_execute("INSERT INTO debug_logs (event, data) VALUES (?, ?)", ["process_updates_done", "ok"])
     except Exception as e:
         import traceback
-        print(f"[WebhookError] {traceback.format_exc()}")
+        err_msg = traceback.format_exc()
+        turso_execute("INSERT INTO debug_logs (event, data) VALUES (?, ?)", ["webhook_error", err_msg[:500]])
     return Response(status_code=200)
+
 
 

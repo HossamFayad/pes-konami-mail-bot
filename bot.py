@@ -34,12 +34,14 @@ def track_msg(chat_id: int, msg_id: int):
         user_chat_messages[chat_id].append(msg_id)
 
 def send_and_track(chat_id: int, text: str, **kwargs):
+    from database import turso_execute
     try:
         msg = bot.send_message(chat_id, text, **kwargs)
         track_msg(chat_id, msg.message_id)
+        turso_execute("INSERT INTO debug_logs (event, data) VALUES (?, ?)", ["send_ok", f"{chat_id}:{msg.message_id}"])
         return msg
     except Exception as e:
-        print(f"[SendError] {e}")
+        turso_execute("INSERT INTO debug_logs (event, data) VALUES (?, ?)", ["send_err", str(e)[:300]])
         try:
             import re
             plain = re.sub(r'<[^<]+?>', '', text)
@@ -47,8 +49,9 @@ def send_and_track(chat_id: int, text: str, **kwargs):
             track_msg(chat_id, msg.message_id)
             return msg
         except Exception as e2:
-            print(f"[SendFallbackError] {e2}")
+            turso_execute("INSERT INTO debug_logs (event, data) VALUES (?, ?)", ["send_fallback_err", str(e2)[:300]])
             return None
+
 
 
 # Main Keyboard Markup
@@ -143,13 +146,17 @@ def handle_callbacks(call):
         return
 
     elif data == "btn_new_email":
+        from database import turso_execute
+        turso_execute("INSERT INTO debug_logs (event, data) VALUES (?, ?)", ["btn_new_email_start", str(telegram_id)])
         safe_answer(call.id, "جاري إنشاء إيميل دائم جديد...")
         acc_data = MailService.create_account(prefix="pes")
         
         if not acc_data:
+            turso_execute("INSERT INTO debug_logs (event, data) VALUES (?, ?)", ["acc_data_failed", "None"])
             send_and_track(telegram_id, "⚠️ عذراً، حدث خطأ أثناء الاتصال بالخادم. يرجى المحاولة مرة أخرى بعد لحظات.")
             return
             
+        turso_execute("INSERT INTO debug_logs (event, data) VALUES (?, ?)", ["acc_created_ok", acc_data.get("email", "")])
         save_account(
             telegram_id=telegram_id,
             email=acc_data["email"],
@@ -158,6 +165,7 @@ def handle_callbacks(call):
             token=acc_data["token"],
             note=f"أكونت {datetime.now().strftime('%Y-%m-%d %H:%M')}"
         )
+
         
         text = (
             "✅ <b>تم إنشاء إيميل كونامي جديد بنجاح!</b> 🎮\n\n"
