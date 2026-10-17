@@ -19,7 +19,7 @@ from mail_service import MailService
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8773865112:AAEfK4wken0OxfKEgxvIRTkTkJC8i01K0qQ")
 
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", threaded=False)
 
 # In-memory tracking of seen message IDs to prevent duplicate alerts
 seen_message_ids = set()
