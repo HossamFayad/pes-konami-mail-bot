@@ -86,19 +86,20 @@ def handle_start(message):
     )
     send_and_track(telegram_id, text, reply_markup=get_main_menu_markup())
 
+def safe_answer(call_id: str, text: str = None, show_alert: bool = False):
+    try:
+        bot.answer_callback_query(call_id, text=text, show_alert=show_alert)
+    except Exception:
+        pass
+
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
     telegram_id = call.message.chat.id
     track_msg(telegram_id, call.message.message_id)
     data = call.data
     
-    # Immediately acknowledge callback query so Telegram stops spinning
-    try:
-        bot.answer_callback_query(call.id)
-    except Exception:
-        pass
-    
     if data == "btn_main_menu":
+
 
         active = get_active_account(telegram_id)
         active_info = f"<code>{active['email']}</code>" if active else "لا يوجد إيميل نشط حالياً."
@@ -114,7 +115,7 @@ def handle_callbacks(call):
         return
 
     elif data == "btn_clean_screen":
-        bot.answer_callback_query(call.id, "جاري تنظيف الشاشة وتجهيز الجلسة...")
+        safe_answer(call.id, "جاري تنظيف الشاشة وتجهيز الجلسة...")
         
         # 1. Reset active account in DB so state is fresh (archive remains 100% safe)
         clear_active_account(telegram_id)
@@ -142,7 +143,7 @@ def handle_callbacks(call):
         return
 
     elif data == "btn_new_email":
-        bot.answer_callback_query(call.id, "جاري إنشاء إيميل دائم جديد...")
+        safe_answer(call.id, "جاري إنشاء إيميل دائم جديد...")
         acc_data = MailService.create_account(prefix="pes")
         
         if not acc_data:
@@ -182,10 +183,10 @@ def handle_callbacks(call):
     elif data == "btn_check_inbox":
         active = get_active_account(telegram_id)
         if not active:
-            bot.answer_callback_query(call.id, "لا يوجد إيميل نشط! قم بتوليد إيميل أولاً.", show_alert=True)
+            safe_answer(call.id, "لا يوجد إيميل نشط! قم بتوليد إيميل أولاً.", show_alert=True)
             return
             
-        bot.answer_callback_query(call.id, "جاري فحص صندوق الوارد...")
+        safe_answer(call.id, "جاري فحص صندوق الوارد...")
         messages = MailService.get_messages(active["token"])
         
         if not messages:
@@ -242,7 +243,7 @@ def handle_callbacks(call):
         msg_id = data.replace("read_", "")
         detail = MailService.get_message_detail(active["token"], msg_id)
         if not detail:
-            bot.answer_callback_query(call.id, "تعذر جلب تفاصيل الرسالة.", show_alert=True)
+            safe_answer(call.id, "تعذر جلب تفاصيل الرسالة.", show_alert=True)
             return
             
         subject = detail.get("subject", "")
@@ -267,7 +268,7 @@ def handle_callbacks(call):
     elif data == "btn_handover":
         active = get_active_account(telegram_id)
         if not active:
-            bot.answer_callback_query(call.id, "قم بتوليد إيميل أولاً لإنشاء كارت المشتري!", show_alert=True)
+            safe_answer(call.id, "قم بتوليد إيميل أولاً لإنشاء كارت المشتري!", show_alert=True)
             return
             
         card_text = (
@@ -288,7 +289,7 @@ def handle_callbacks(call):
     elif data == "btn_archive":
         accounts = get_user_accounts(telegram_id, limit=8)
         if not accounts:
-            bot.answer_callback_query(call.id, "لم تقم بإنشاء أي إيميلات بعد!", show_alert=True)
+            safe_answer(call.id, "لم تقم بإنشاء أي إيميلات بعد!", show_alert=True)
             return
             
         text = "📂 <b>أرشيف حسابات كونامي المنشأة مؤخراً:</b>\n\nاضغط على أي إيميل لجعله الحساب النشط وفحص رسائله:"
@@ -305,7 +306,7 @@ def handle_callbacks(call):
         acc = get_account_by_id(acc_id)
         if acc:
             set_active_account(telegram_id, acc_id)
-            bot.answer_callback_query(call.id, "تم تفعيل الحساب بنجاح!")
+            safe_answer(call.id, "تم تفعيل الحساب بنجاح!")
             text = (
                 f"✅ <b>تم التحويل إلى الإيميل:</b>\n<code>{acc['email']}</code>\n\n"
                 f"🔐 كلمة المرور: <code>{acc['password']}</code>\n\n"
