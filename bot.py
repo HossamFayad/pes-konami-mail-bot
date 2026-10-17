@@ -40,7 +40,16 @@ def send_and_track(chat_id: int, text: str, **kwargs):
         return msg
     except Exception as e:
         print(f"[SendError] {e}")
-        return None
+        try:
+            import re
+            plain = re.sub(r'<[^<]+?>', '', text)
+            msg = bot.send_message(chat_id, plain)
+            track_msg(chat_id, msg.message_id)
+            return msg
+        except Exception as e2:
+            print(f"[SendFallbackError] {e2}")
+            return None
+
 
 # Main Keyboard Markup
 def get_main_menu_markup():
@@ -83,7 +92,14 @@ def handle_callbacks(call):
     track_msg(telegram_id, call.message.message_id)
     data = call.data
     
+    # Immediately acknowledge callback query so Telegram stops spinning
+    try:
+        bot.answer_callback_query(call.id)
+    except Exception:
+        pass
+    
     if data == "btn_main_menu":
+
         active = get_active_account(telegram_id)
         active_info = f"<code>{active['email']}</code>" if active else "لا يوجد إيميل نشط حالياً."
         text = (
